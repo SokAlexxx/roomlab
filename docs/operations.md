@@ -1,12 +1,12 @@
 # Експлуатація RoomLab (локальне демо)
 
 ## Запуск і перевірка
-- Повну перевірку (Docker build, Ruff, `manage.py check`, `makemigrations --check`, `migrate`, повний набір тестів на PostgreSQL в одноразовому стеку) запускає вбудований операційний раннер: з кореня репозиторію `py -3.12 .roomlab-check.py`. Його ж повторює контролер RoomLab перед релізом. Docker, релізи та фінальне демо веде контролер.
+- [Повна перевірка](handoff.md#5-тестування) охоплює збірку Docker, Ruff, перевірку міграцій і тести Django на PostgreSQL.
 - Ручний запуск: `PG_PASS=… DEMO_PASS=… DJANGO_SECRET_KEY=… docker compose up -d --build`, потім `docker compose exec web python manage.py migrate` і `docker compose exec web python manage.py seed_demo`.
 
 ## Цілісність даних
 - Джерело істини — PostgreSQL. Check constraint `booking_start_before_end`, `booking_status_valid` і exclusion constraint `booking_no_overlap_active` (GiST, `btree_gist`, `[start,end)`) не можна вимикати чи обходити прямими SQL-вставками.
-- Схему змінюють лише міграціями; перед релізом `makemigrations --check` має бути чистим (це робить раннер).
+- Схему змінюють лише міграціями; перед релізом `makemigrations --check` має бути чистим (це перевіряє CI).
 - `seed_demo` ідемпотентний: кімнати шукаються за унікальною назвою, наявні бронювання не змінюються, паролі демо-користувачів скидаються з `DEMO_PASS`.
 - `Room`/`User` захищені `on_delete=PROTECT`: кімнату чи користувача з бронюваннями видалити не можна — історія лишається.
 
@@ -19,7 +19,6 @@
   docker compose -p roomlab-bench exec web python manage.py bench_search
   docker compose -p roomlab-bench down -v
   ```
-- Контролер (раннер `.roomlab-check.py` для A3 і релізний стенд) запускає `seed_demo`, а потім `bench_search` без аргументів в одноразовому стеку, який одразу видаляє.
 - Захист (усі перевірки виконуються в одній транзакції з сідом, після `select_for_update`): команда пише лише в кімнати `BENCH-*` від імені користувача `bench` і нічого не змінює й не видаляє в інших даних. Команда відмовляє в запуску, якщо:
   - у базі є **будь-яке** бронювання, крім bench-бронювань у `BENCH-*`. Це ознака робочої чи демо-бази, а не одноразової: свіжий стек після `migrate` + `seed_demo` бронювань не має;
   - наявна кімната `BENCH-*` має місткість ≠ 10, бо інакше вставка `ACTIVE` обійшла б v2-правило «місткість >100 → `PENDING`»;
@@ -37,6 +36,6 @@
 ## Відновлення
 - Резервна копія: `docker compose exec -T db pg_dump -U roomlab -Fc roomlab > roomlab.dump`.
 - Відновлення: `docker compose exec -T db pg_restore -U roomlab -d roomlab --clean --if-exists < roomlab.dump`, потім `migrate` і перевірка `/health/`.
-- Сервіс `web` без стану: при збої — `docker compose restart web`. Якщо БД недоступна, `/health/` дає 503; перевірте `docker compose ps` і `logs db`.
+- Після трьох поспіль HTTP 503 від `/health/` перевірте `docker compose ps -a` і `docker compose logs --tail=100 db`. Якщо PostgreSQL зупинено, запустіть `docker compose up -d --wait db`. Повторіть запит до `/health/` і зафіксуйте час відновлення та результат. Якщо БД працює, а HTTP 503 повторюється, збережіть журнали `db` і `web` та передайте їх відповідальному за експлуатацію.
 - Повне скидання демо (втрата даних): `docker compose down -v`, `up -d`, `migrate`, `seed_demo`.
 - Bench-дані видаляються разом з одноразовим стеком (`down -v`); у демо-базі їх не повинно бути. Якщо `bench_search` все ж запустили в демо-базі без бронювань, кімнати `BENCH-*` з'являться в пошуку alice і bob. У такому разі відновіть базу з дампу або повністю скиньте демо.

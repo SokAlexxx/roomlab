@@ -2,8 +2,7 @@
 
 Документ для того, хто підтримуватиме RoomLab після команди. Усе нижче взято з коду репозиторію
 (`compose.yaml`, `Dockerfile`, `config/`, `booking/`, `.github/workflows/ci.yml`) і наявних документів
-`docs/*.md`. Поведінку API визначає `docs/contract.md`. Тут немає результатів прогонів чи ретроспектив,
-яких не було: дані про виконані перевірки є лише в `evidence/*.md`.
+`docs/*.md`. Поведінку API визначає `docs/contract.md`. Результати окремих задач наведено в `evidence/*.md`, а фактичні перевірки передавання — у протоколі релізу v2.0.
 
 Обсяг: лише локальне демо. Немає реєстрації, веб-інтерфейсу, e-mail, зовнішнього хостингу чи реальних даних.
 
@@ -53,22 +52,20 @@ docker compose exec web python manage.py migrate --noinput
 docker compose exec web python manage.py seed_demo
 curl -s http://127.0.0.1:8000/health/           # очікується {"status": 200, "elapsed_ms": …} (config/urls.py)
 ```
-Конкретний реліз розгортають з тегу (`git checkout v1.0`, далі ті самі кроки). Тег v2.0 ще не створено (§10).
+Для v2.0 завантажте `roomlab-source.zip` з [релізу](https://github.com/SokAlexxx/roomlab/releases/tag/v2.0) або відкрийте тег `v2.0` у клоні. Для відтворення v1.0 використайте її архів або тег `v1.0`.
 
 ## 5. Тестування
-- **Повна перевірка (основна):** `py -3.12 .roomlab-check.py` з кореня. Вона збирає образ, запускає Ruff, `manage.py check`,
-  `makemigrations --check`, `migrate` і повний набір тестів на PostgreSQL в одноразовому стеку. Успіх — рядок
-  `ROOMLAB_CHECK_OK`. Ту саму перевірку повторює контролер RoomLab.
-- **Вручну, так само як у CI:**
+- Задайте локальні змінні з [README](../README.md#локальне-демо). Виконайте кроки CI в окремому Compose-проєкті `roomlab-check`:
   ```
-  docker compose build web
-  docker compose up -d --wait db
-  docker compose run --rm web ruff check .
-  docker compose run --rm web python manage.py makemigrations --check --dry-run
-  docker compose run --rm web python manage.py migrate --noinput
-  docker compose run --rm web python manage.py test
-  docker compose down
+  docker compose -p roomlab-check build web
+  docker compose -p roomlab-check up -d --wait db
+  docker compose -p roomlab-check run --rm web ruff check .
+  docker compose -p roomlab-check run --rm web python manage.py makemigrations --check --dry-run
+  docker compose -p roomlab-check run --rm web python manage.py migrate --noinput
+  docker compose -p roomlab-check run --rm web python manage.py test
+  docker compose -p roomlab-check down -v
   ```
+  Команда `down -v` видаляє том цього тестового проєкту.
   `manage.py test` використовує MD5-хешер і окрему тестову БД. SQLite не підтримується: exclusion constraint і
   `SELECT … FOR UPDATE` працюють лише в PostgreSQL.
 - Спільні тести `qa/test_contract.py` змінювати не можна. Їхні етапи вмикаються наявністю `evidence/<KEY>.md`.
@@ -138,47 +135,45 @@ Smoke додає в демо-базу записи на 2030-01-01. Для чи�
 | Пошук, створення, exclusion constraint, правило місткості, міграції v2 | SokAlexxx (розробник A) | `docs/team.md`, ризики 1 і 4 |
 | `seed_demo`, мої бронювання/скасування, погодження й аудит, командна документація, секрети | TkachAndrii (розробник B) | `docs/team.md`, ризики 2, 3, 5 |
 | Рев'ю PR | інший розробник пари | політика рев'ю в `docs/team.md` |
-| Git, Jira, CI, релізи, фінальне демо, повтор `.roomlab-check.py` | контролер RoomLab (автоматизація) | `README.md`, `docs/operations.md` |
+| Відтворення перевірок і локального демо | Команда супроводу | `README.md`, §5 цього документа |
 
-## 10. Відкриті питання
-1. **Реліз v2.0 (REL2) ще не створено.** У репозиторії є лише тег `v1.0`. Тег і реліз v2.0 створює контролер.
-2. **Коригувальна задача 1 з інциденту виконана лише частково.** Healthcheck `db` у `compose.yaml` є, а `restart: unless-stopped`
-   немає, тож зупинена БД сама не піднімається. Власник SokAlexxx (`docs/incident.md`).
-3. **Коригувальна задача 2 з інциденту не виконана.** У `docs/operations.md` є лише загальна порада (`ps`, `logs db`),
-   а правила ескалації з порогом «≥3 поспіль 503 → `ps`, `logs db`, старт `db`» немає. Власник TkachAndrii. Тимчасово можна користуватися §7 цього документа.
-4. Відновлення з дампу менше ніж за 5 хв не вимірюється автоматично (`docs/quality.md`).
-5. Поріг місткості `100` задано константою в `booking/rooms.py`, а не в налаштуваннях.
-6. Сповіщень про 503 немає. `/health/` перевіряє лише `SELECT 1`.
-7. `runserver` годиться лише для локального демо. Будь-яке інше розгортання виходить за межі контракту.
-8. Конкурентність перевірено тестами лише для двох паралельних запитів. Навантажувальних вимірювань, крім `bench_search`, немає.
+## 10. Стан передавання й відкриті питання
+
+[v2.0](https://github.com/SokAlexxx/roomlab/releases/tag/v2.0) опубліковано. [Протокол передавання](https://github.com/SokAlexxx/roomlab/releases/download/v2.0/handoff.json) фіксує відновлення за 4,281 с, збіг двох контрольних рядків після міграції та запуск локального демо. Правило реагування на три відповіді HTTP 503 наведено в [інструкції з експлуатації](operations.md).
+
+1. Healthcheck PostgreSQL є в `compose.yaml`. Політика автоматичного перезапуску БД лишається відкритою задачею.
+2. Час відновлення зафіксовано під час передавання. Постійного автоматичного вимірювання немає.
+3. Поріг місткості `100` задано константою в `booking/rooms.py`, а не в налаштуваннях.
+4. Сповіщень про 503 немає. `/health/` перевіряє лише `SELECT 1`.
+5. `runserver` годиться лише для локального демо. Будь-яке інше розгортання виходить за межі контракту.
+6. Конкурентність перевірено тестами лише для двох паралельних запитів. Навантажувальних вимірювань, крім `bench_search`, немає.
 
 ## 11. Посилання на релізи й рев'ю
-Посилання побудовано з `origin` (`https://github.com/SokAlexxx/roomlab-agents`) і номерів PR у повідомленнях комітів `main`.
-- Репозиторій: https://github.com/SokAlexxx/roomlab-agents
-- Реліз v1.0: https://github.com/SokAlexxx/roomlab-agents/releases/tag/v1.0
-- Реліз v2.0 (запланований, ще не існує): https://github.com/SokAlexxx/roomlab-agents/releases/tag/v2.0
-- Зміни після v1.0: https://github.com/SokAlexxx/roomlab-agents/compare/v1.0...main
-- CI: https://github.com/SokAlexxx/roomlab-agents/actions
+- Репозиторій: https://github.com/SokAlexxx/roomlab
+- Реліз v1.0: https://github.com/SokAlexxx/roomlab/releases/tag/v1.0
+- Реліз v2.0: https://github.com/SokAlexxx/roomlab/releases/tag/v2.0
+- Зміни після v1.0: https://github.com/SokAlexxx/roomlab/compare/v1.0...v2.0
+- CI: https://github.com/SokAlexxx/roomlab/actions
 - PR (рев'ю):
   | PR | Задача |
   |---|---|
-  | [#1](https://github.com/SokAlexxx/roomlab-agents/pull/1) | KAN-11 B1 акаунти, вимоги, ризики |
-  | [#2](https://github.com/SokAlexxx/roomlab-agents/pull/2) | KAN-4 A1 пошук |
-  | [#3](https://github.com/SokAlexxx/roomlab-agents/pull/3) | KAN-12 B2 мої записи й скасування |
-  | [#4](https://github.com/SokAlexxx/roomlab-agents/pull/4) | KAN-5 A2 створення й конкурентність |
-  | [#5](https://github.com/SokAlexxx/roomlab-agents/pull/5) | KAN-13 B3 спостереження, інтеграційні тести |
-  | [#6](https://github.com/SokAlexxx/roomlab-agents/pull/6) | KAN-6 A3 продуктивність, документація |
-  | [#7](https://github.com/SokAlexxx/roomlab-agents/pull/7) | KAN-14 B4 запит на зміну, характеристичні тести |
-  | [#8](https://github.com/SokAlexxx/roomlab-agents/pull/8) | KAN-16 B6 інцидент |
-  | [#9](https://github.com/SokAlexxx/roomlab-agents/pull/9) | KAN-7 A4 рефакторинг |
-  | [#10](https://github.com/SokAlexxx/roomlab-agents/pull/10) | KAN-8 A5 схема й міграція |
-  | [#11](https://github.com/SokAlexxx/roomlab-agents/pull/11) | KAN-15 B5 погодження, аудит |
-  | [#12](https://github.com/SokAlexxx/roomlab-agents/pull/12) | KAN-9 A6 початковий стан PENDING |
-- PR цієї задачі (KAN-10 / A7) і його рев'ю створює контролер. Номера поки немає.
+  | [#1](https://github.com/SokAlexxx/roomlab/pull/1) | KAN-11 B1 акаунти, вимоги, ризики |
+  | [#2](https://github.com/SokAlexxx/roomlab/pull/2) | KAN-4 A1 пошук |
+  | [#3](https://github.com/SokAlexxx/roomlab/pull/3) | KAN-12 B2 мої записи й скасування |
+  | [#4](https://github.com/SokAlexxx/roomlab/pull/4) | KAN-5 A2 створення й конкурентність |
+  | [#5](https://github.com/SokAlexxx/roomlab/pull/5) | KAN-13 B3 спостереження, інтеграційні тести |
+  | [#6](https://github.com/SokAlexxx/roomlab/pull/6) | KAN-6 A3 продуктивність, документація |
+  | [#7](https://github.com/SokAlexxx/roomlab/pull/7) | KAN-14 B4 запит на зміну, характеристичні тести |
+  | [#8](https://github.com/SokAlexxx/roomlab/pull/8) | KAN-16 B6 інцидент |
+  | [#9](https://github.com/SokAlexxx/roomlab/pull/9) | KAN-7 A4 рефакторинг |
+  | [#10](https://github.com/SokAlexxx/roomlab/pull/10) | KAN-8 A5 схема й міграція |
+  | [#11](https://github.com/SokAlexxx/roomlab/pull/11) | KAN-15 B5 погодження, аудит |
+  | [#12](https://github.com/SokAlexxx/roomlab/pull/12) | KAN-9 A6 початковий стан PENDING |
+  | [#13](https://github.com/SokAlexxx/roomlab/pull/13) | KAN-10 A7 передавання й інструкція запуску |
 - Jira: https://grouplabor.atlassian.net/browse/KAN-10
 
-## 12. Запланований сценарій презентації
-Це план, а не запис виконаного демо. Стенд — локальний Docker-стек, розгорнутий за §4 на релізі v2.0, коли той з'явиться.
+## 12. Сценарій презентації
+Для демонстрації розгорніть локальний Docker-стек v2.0 за §4.
 1. Контекст і межі (1 хв): `docs/contract.md`, схема з `docs/architecture.md`.
 2. Запуск: `docker compose ps`, `/health/` → 200.
 3. Сценарій v1 на R100 (alice/bob): пошук → бронювання 201 `ACTIVE` → конфлікт 409 → суміжний інтервал 201 → чуже скасування 403 → своє скасування 200 → слот знову вільний.
