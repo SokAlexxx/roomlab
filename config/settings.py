@@ -15,3 +15,4 @@ if len(sys.argv) > 1 and sys.argv[1] == "test":
     # Fast hashing for the test suite only; the running service keeps Django's default PBKDF2.
     PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 MIDDLEWARE = []
+MIDDLEWARE += ["booking.telemetry.RequestTelemetry"]
