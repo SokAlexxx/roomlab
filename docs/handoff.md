@@ -13,7 +13,7 @@
 | API (Django, `runserver` на 0.0.0.0:8000 у контейнері) | `Dockerfile`, `config/`, `booking/` | Сервер розробки, тільки для локального демо. Порт публікується лише на `127.0.0.1:${WEB_PORT:-8000}` |
 | PostgreSQL 16 | сервіс `db` у `compose.yaml`, том `data` | Джерело істини. Healthcheck `pg_isready`, від якого залежить `web` |
 | Маршрути | `config/urls.py`, `booking/rooms_urls.py`, `booking/flow_urls.py` | `/health/`, `/api/rooms/available/`, `/api/bookings/`, `/api/bookings/mine/`, `/api/bookings/{id}/cancel/`, `/api/approvals/`, `/api/approvals/{id}/decision/` |
-| Міграції | `booking/migrations/0001…0003` | 0003 — аудит рішень і розширений overlap-constraint (див. §6) |
+| Міграції | `booking/migrations/0001…0003` | 0003 — аудит рішень і розширений overlap-constraint (див. §8) |
 | Команди | `seed_demo`, `bench_search` | `bench_search` лише в одноразовій БД (`docs/operations.md`) |
 
 Детальніше: `docs/architecture.md` (компоненти, ADR-1), `docs/change.md` (v1 → v2), `docs/decisions.md`
@@ -51,9 +51,9 @@ export PG_PASS=<локальний пароль БД> DEMO_PASS=<пароль д
 docker compose up -d --build                    # db чекає healthy, потім web
 docker compose exec web python manage.py migrate --noinput
 docker compose exec web python manage.py seed_demo
-curl -s http://127.0.0.1:8000/health/           # очікується {"status": 200, ...}
+curl -s http://127.0.0.1:8000/health/           # очікується {"status": 200, "elapsed_ms": …} (config/urls.py)
 ```
-Конкретний реліз розгортають з тегу (`git checkout v1.0`, далі ті самі кроки). Тег v2.0 ще не створено (§9).
+Конкретний реліз розгортають з тегу (`git checkout v1.0`, далі ті самі кроки). Тег v2.0 ще не створено (§10).
 
 ## 5. Тестування
 - **Повна перевірка (основна):** `py -3.12 .roomlab-check.py` з кореня. Вона збирає образ, запускає Ruff, `manage.py check`,
@@ -90,7 +90,8 @@ curl -s -u bob:$DEMO_PASS -X POST $B/api/bookings/ -H 'Content-Type: application
 curl -s -u admin:$DEMO_PASS $B/api/approvals/                          # масив із PENDING bob
 curl -s -u admin:$DEMO_PASS -X POST $B/api/approvals/<id>/decision/ \
      -H 'Content-Type: application/json' -d '{"decision":"approve"}'   # 200 ACTIVE + decided_by/at, decision
-curl -s -u alice:$DEMO_PASS -X POST $B/api/bookings/<id alice>/cancel/ -d '{}'   # 200 CANCELLED
+curl -s -u alice:$DEMO_PASS -X POST $B/api/bookings/<id alice>/cancel/ \
+     -H 'Content-Type: application/json' -d '{}'                        # 200 CANCELLED
 curl -s -u alice:$DEMO_PASS $B/api/bookings/mine/                      # власні записи, зокрема CANCELLED
 ```
 Smoke додає в демо-базу записи на 2030-01-01. Для чистого демо після нього виконайте скидання (§7) або
@@ -98,9 +99,12 @@ Smoke додає в демо-базу записи на 2030-01-01. Для чи�
 
 ## 7. Резервна копія, відновлення, скидання
 - Резервна копія: `docker compose exec -T db pg_dump -U roomlab -Fc roomlab > roomlab.dump`. Файл не комітимо.
-- Відновлення: `docker compose exec -T db pg_restore -U roomlab -d roomlab --clean --if-exists < roomlab.dump`,
-  потім `docker compose exec web python manage.py migrate --noinput` і `curl -s http://127.0.0.1:8000/health/`.
-  Після цього звірте `count(*)` по `booking_room`, `auth_user`, `booking_booking` з даними до збою
+- Відновлення виконують, коли до БД ніхто не пише:
+  1. `docker compose stop web` — зупинити трафік, щоб запити не потрапили в напівочищену базу;
+  2. `docker compose exec -T db pg_restore -U roomlab -d roomlab --clean --if-exists < roomlab.dump`;
+  3. `docker compose run --rm web python manage.py migrate --noinput` (одноразовий контейнер, `web` ще зупинений);
+  4. звірка `count(*)` (нижче), потім `docker compose start web` і `curl -s http://127.0.0.1:8000/health/`.
+  Звірте `count(*)` по `booking_room`, `auth_user`, `booking_booking` з даними до збою
   (ціль із `docs/team.md`: менше 5 хв, рядки незмінні; автоматично не вимірюється).
 - Збій `web`: сервіс без стану, тому досить `docker compose restart web`. `/health/` = 503 означає, що недоступна БД:
   перевірте `docker compose ps -a` і `docker compose logs db`, потім `docker compose start db`. Саме такий випадок розібрано в `docs/incident.md`.
@@ -114,13 +118,17 @@ Smoke додає в демо-базу записи на 2030-01-01. Для чи�
 - Перед будь-якою міграцією чи відкатом зробіть `pg_dump` (§7).
 - **Відкат лише коду** (образ v1.0 на схемі v2) безпечний: v1 ігнорує nullable-колонки й створює тільки `ACTIVE`.
   Але тоді R101 знову бронюється одразу як `ACTIVE`, а наявні `PENDING` не можна погодити.
-- **Відкат схеми** (`migrate booking 0002`) виконується ще **на образі v2**, бо файл 0003 потрібен для reverse. Лише після цього розгортають v1.0:
-  1. вивантажте аудит, якщо він потрібен: колонки `decided_by`, `decided_at`, `decision` після відкату зникають безповоротно;
-  2. переведіть `PENDING` у `CANCELLED`, бо після відкату БД більше не захищає `PENDING` від перетинів:
+- **Відкат схеми** (`migrate booking 0002`) виконується ще **образом v2**, бо файл 0003 потрібен для reverse, але
+  **без запущеного `web`**. Інакше код v2 між кроками створюватиме нові `PENDING`, які переживуть відкат без захисту
+  від перетинів, а після відкату звертатиметься до видалених колонок аудиту й віддаватиме 500. Порядок:
+  1. `docker compose stop web` — до кінця процедури до БД ніхто не пише;
+  2. вивантажте аудит, якщо він потрібен: колонки `decided_by`, `decided_at`, `decision` після відкату зникають безповоротно;
+  3. переведіть `PENDING` у `CANCELLED`, бо після відкату БД більше не захищає `PENDING` від перетинів:
      `docker compose exec db psql -U roomlab -d roomlab -c "UPDATE booking_booking SET status='CANCELLED' WHERE status='PENDING';"`.
      `REJECTED` можна лишити;
-  3. `docker compose exec web python manage.py migrate booking 0002`;
-  4. `git checkout v1.0 && docker compose up -d --build web`, далі smoke (§6) без кроків approvals.
+  4. `docker compose run --rm web python manage.py migrate booking 0002` — одноразовий контейнер образу v2;
+  5. лише тепер `git checkout v1.0 && docker compose up -d --build web` (`web` уперше після зупинки стартує вже на v1.0),
+     далі smoke (§6) без кроків approvals.
 - Повторне застосування 0003 після періоду роботи v1 впаде, якщо за цей час з'явилися перетини `PENDING`/`ACTIVE`.
 - Критерій відкату (`docs/change.md` §8): червоний тест у `booking/tests/test_legacy.py` або змінений legacy-рядок після міграції.
 
