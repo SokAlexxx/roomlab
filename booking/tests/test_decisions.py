@@ -163,6 +163,36 @@ class Decisions(Fixtures, TestCase):
         self.assertEqual(self.post(cancel_path(rejected.pk), "alice").status_code, 409)
 
 
+class DatabaseGuarantees(Fixtures, TestCase):
+    """Гарантії рівня БД з A5, на які спирається B5."""
+
+    def setUp(self):
+        self.make_world()
+
+    def test_partial_audit_rejected_by_check_constraint(self):
+        from django.db import IntegrityError, transaction
+        row = self.pending()
+        for fields in ({"decision": "approve"}, {"decided_by": self.admin}, {"decided_at": at(9)}):
+            with self.assertRaises(IntegrityError), transaction.atomic():
+                Booking.objects.filter(pk=row.pk).update(**fields)
+        row.refresh_from_db()
+        self.assertEqual((row.decision, row.decided_by, row.decided_at), (None, None, None))
+
+    def test_exclusion_constraint_covers_pending_not_rejected(self):
+        from django.db import IntegrityError, transaction
+        self.pending()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Booking.objects.create(owner=self.alice, room=self.room, start=at(10), end=at(11),
+                                   status=Booking.Status.PENDING)
+        Booking.objects.create(owner=self.alice, room=self.room, start=at(10), end=at(11),
+                               status=Booking.Status.REJECTED, decision="reject",
+                               decided_by=self.admin, decided_at=at(9))
+
+    def test_pending_is_cancellable(self):
+        from booking.flow import CANCELLABLE
+        self.assertIn(Booking.Status.PENDING, CANCELLABLE)
+
+
 class ConcurrentDecisions(Fixtures, TransactionTestCase):
     """Threads with distinct PostgreSQL connections released at the same moment."""
 
