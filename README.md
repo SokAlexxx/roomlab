@@ -1,6 +1,10 @@
 # RoomLab
 Two-person local room-booking API. See docs/contract.md. The RoomLab controller runs Docker, checks, releases and the final local demo.
 
+## Документація та задачі
+- Confluence (єдиний вхід, навігатор): [RoomLab — головна сторінка](https://grouplabor.atlassian.net/wiki/spaces/RoomLab/overview)
+- Jira: [дошка проєкту KAN](https://grouplabor.atlassian.net/jira/software/projects/KAN/boards/1)
+
 ## Швидкий старт (локальне демо)
 ```
 export PG_PASS=... DEMO_PASS=... DJANGO_SECRET_KEY=...
