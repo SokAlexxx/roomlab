@@ -17,6 +17,21 @@ from booking.models import OVERLAP_CONSTRAINT, Booking, Room
 # REJECTED free it immediately.
 BLOCKING_STATUSES = (Booking.Status.ACTIVE, Booking.Status.PENDING)
 
+# v2 (KAN-9 / A6): rooms larger than this need staff approval, so new bookings
+# start PENDING; rooms up to and including it stay auto-ACTIVE as in v1.
+APPROVAL_CAPACITY_THRESHOLD = 100
+
+
+def initial_status(room):
+    """Status for a new booking: PENDING when capacity > 100, otherwise ACTIVE.
+
+    Evaluated only at creation time; existing rows are never re-evaluated, so a
+    legacy ACTIVE booking on a large room keeps its status (no retroactive approval).
+    """
+    if room.capacity > APPROVAL_CAPACITY_THRESHOLD:
+        return Booking.Status.PENDING
+    return Booking.Status.ACTIVE
+
 
 def parse_instant(value):
     """Parse an ISO 8601 timestamp that carries an explicit offset.
@@ -93,7 +108,8 @@ def reserve(owner, room_id, start, end):
 
     Returns the new Booking, or None when the room does not exist. An overlap
     surfaces as IntegrityError raised after the atomic block has rolled back.
-    v1 always stores ACTIVE.
+    v2: the status comes from initial_status(room). ACTIVE and PENDING are both
+    covered by the exclusion constraint, so either one holds the slot.
     """
     with transaction.atomic():
         # Locking the room row serialises concurrent inserts for one room. Without it two
@@ -103,12 +119,14 @@ def reserve(owner, room_id, start, end):
         if room is None:
             return None
         return Booking.objects.create(room=room, owner=owner, start=start, end=end,
-                                      status=Booking.Status.ACTIVE)
+                                      status=initial_status(room))
 
 
 @endpoint("POST")
 def create(request):
-    """POST /api/bookings/ (KAN-5 / A2). v1 always creates ACTIVE bookings.
+    """POST /api/bookings/ (KAN-5 / A2; v2 status by capacity, KAN-9 / A6).
+
+    Capacity > 100 -> PENDING, otherwise ACTIVE; both reserve the slot.
 
     The application does no read-then-write availability check: PostgreSQL's
     exclusion constraint is the single source of truth, so two concurrent
