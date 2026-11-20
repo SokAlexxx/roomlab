@@ -13,7 +13,7 @@
 | Телеметрія | `booking/tests/test_e2e.py::TelemetryLogging`, `TelemetryOnException` | Структурований лог запиту без облікових даних |
 | Контракт (спільний) | `qa/test_contract.py` | Незмінні тести команди; активуються файлами `evidence/*.md` |
 
-Усі тести виконуються на PostgreSQL у одноразовому Docker-стеку командою `py -3.12 .roomlab-check.py` (те саме — у CI). SQLite не використовується: exclusion-обмеження і `SELECT … FOR UPDATE` потребують PostgreSQL.
+Усі тести виконуються на PostgreSQL в одноразовому Docker-стеку. [Команди перевірки](handoff.md#5-тестування) відповідають крокам CI. SQLite не використовується: exclusion-обмеження і `SELECT … FOR UPDATE` потребують PostgreSQL.
 
 ## Відповідність ризиків тестам
 
@@ -22,7 +22,7 @@
 | 1 | Подвійне бронювання при конкурентних запитах | Exclusion-обмеження PostgreSQL на `(room, tstzrange)` | `test_create.py::ConcurrentCreate::test_simultaneous_same_slot_one_wins`, `test_simultaneous_partial_overlap_one_wins`, `test_simultaneous_adjacent_both_win`; `CreateBooking::test_database_rejects_overlap_without_api`, `test_constraints_present_in_database`; `qa/test_contract.py::test_postgres_allows_only_one_booking`; крок 409 у `test_e2e.py::V1EndToEnd` |
 | 2 | Обхід прав (скасування чужим) | ADR-2: власник лише з `request.user`, перевірка до мутації | `test_flow.py::test_foreign_cancel_is_403_without_mutation`, `test_foreign_inactive_is_still_403`, `test_cancel_requires_authentication`, `test_mine_owner_isolation`; `test_create.py::test_owner_comes_from_server_not_body`, `test_requires_authentication`; крок 403 зі знімком рядка в `test_e2e.py::V1EndToEnd`; `qa/test_contract.py::test_owner` |
 | 3 | Неідемпотентний seed | `get_or_create` за унікальними ключами, без видалень | `test_seed.py::test_rerun_is_idempotent_and_preserves_ids_and_bookings`, `test_keeps_preexisting_rows`, `test_rerun_resets_passwords_and_flags`; `qa/test_contract.py::test_seed` |
-| 4 | Міграція v2 ламає legacy-записи | Лише адитивні міграції, збереження constraints | Частково: `makemigrations --check` у перевірці; `test_create.py::test_constraints_present_in_database`. Тест на знімку legacy-рядків після міграції v2 **ще не існує** — з'явиться разом із v2 |
+| 4 | Міграція v2 ламає legacy-записи | Лише адитивні міграції, збереження constraints | `makemigrations --check`, `test_migration.py::MigrationV1ToV2::test_v2_preserves_legacy_rows_and_leaves_audit_empty`, `test_migration.py::MigrationV1ToV2::test_rollback_to_v1_keeps_legacy_rows` |
 | 5 | Витік секретів | Секрети лише через змінні середовища; не логуються | `test_e2e.py::TelemetryLogging::test_no_credentials_or_request_data_logged`, `test_unsafe_client_request_id_is_replaced` (пароль, Basic-заголовок, ім'я користувача не потрапляють у лог). Відсутність секретів у репозиторії перевіряється лише рев'ю диффів |
 
 ## Цілі якості
@@ -48,6 +48,6 @@ Middleware `booking.telemetry.RequestTelemetry` (єдиний у `MIDDLEWARE`) �
 
 ## Критерії готовності зміни
 
-1. `py -3.12 .roomlab-check.py` завершується `ROOMLAB_CHECK_OK`.
+1. [Перевірки CI](handoff.md#5-тестування) завершуються успішно.
 2. Нова поведінка має тест; зміна прав — тест «відмова без мутації».
 3. Спільні `qa/` тести не змінено.
