@@ -11,6 +11,7 @@ import secrets
 import time
 from datetime import datetime, timedelta, timezone
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
@@ -23,7 +24,7 @@ BENCH_USER = "bench"
 ROOM_COUNT = 10
 SLOTS_PER_ROOM = 100  # ROOM_COUNT * SLOTS_PER_ROOM = 1000 bookings
 ROWS = ROOM_COUNT * SLOTS_PER_ROOM
-# Capacity <= 100 keeps the rooms out of the v2 approval path.
+# v2 sends capacity > 100 to PENDING; bench rooms must stay well below that (checked in seed()).
 BENCH_CAPACITY = 10
 # Far-future fixed base so bench slots never collide with demo dates.
 BASE = datetime(2040, 1, 1, tzinfo=timezone.utc)
@@ -45,8 +46,17 @@ def slot(index):
     return start, start + SLOT
 
 
+def request_host():
+    """A host the running settings accept; outside the test runner "testserver" is not implied."""
+    for host in settings.ALLOWED_HOSTS:
+        if host and host != "*" and not host.startswith("."):
+            return host
+    return "localhost"
+
+
 class Command(BaseCommand):
-    help = "Benchmark room search on a DISPOSABLE database (seeds bench rooms, user and 1000 bookings)."
+    help = ("Benchmark room search on a DISPOSABLE database: seeds BENCH-* rooms, user 'bench' and "
+            "1000 bookings; refuses if the database holds any non-bench booking.")
 
     def add_arguments(self, parser):
         parser.add_argument("--disposable-db", metavar="NAME",
@@ -57,16 +67,6 @@ class Command(BaseCommand):
         expected = options.get("disposable_db")
         if expected is not None and expected != actual:
             raise CommandError(f"refusing to run: --disposable-db must equal the current database name ({actual!r})")
-        # Bench data lives only in BENCH-* rooms owned by the bench user. Refuse if those rooms
-        # carry anyone else's bookings (they would be real rooms) or if "bench" is privileged.
-        foreign = (Booking.objects.filter(room__name__startswith=BENCH_PREFIX)
-                   .exclude(owner__username=BENCH_USER).count())
-        if foreign:
-            raise CommandError(f"refusing to run: {foreign} non-bench bookings found in {BENCH_PREFIX}* rooms")
-        privileged = get_user_model().objects.filter(username=BENCH_USER).exclude(
-            is_staff=False, is_superuser=False).exists()
-        if privileged:
-            raise CommandError(f"refusing to run: user {BENCH_USER!r} is privileged, not a bench account")
 
         password = secrets.token_urlsafe(24)
         rooms = self.seed(password)
@@ -74,7 +74,7 @@ class Command(BaseCommand):
         rows = Booking.objects.filter(room__in=rooms, status=Booking.Status.ACTIVE).count()
 
         auth = "Basic " + base64.b64encode(f"{BENCH_USER}:{password}".encode()).decode()
-        client = Client(HTTP_AUTHORIZATION=auth)
+        client = Client(HTTP_HOST=request_host(), HTTP_AUTHORIZATION=auth)
         errors = 0
         timings = []
         for i in range(WARMUPS + SAMPLES):
@@ -89,9 +89,7 @@ class Command(BaseCommand):
                 ok = False
             if i >= WARMUPS:
                 timings.append(elapsed_ms)
-                errors += not ok
-            elif not ok:
-                errors += 1
+            errors += not ok
 
         result = {"rows": rows, "samples": len(timings), "p95_ms": round(p95(timings), 2), "errors": errors}
         self.stdout.write(json.dumps(result))
@@ -103,20 +101,31 @@ class Command(BaseCommand):
             raise CommandError(f"p95 {result['p95_ms']} ms exceeds {P95_LIMIT_MS:.0f} ms")
 
     def seed(self, password):
-        """Create bench user, rooms and missing bookings; existing rows are kept as they are."""
+        """Create bench user, rooms and missing bookings; all guards run inside the same transaction."""
         User = get_user_model()
         with transaction.atomic():
             user, _ = User.objects.select_for_update().get_or_create(username=BENCH_USER)
-            user.is_staff = False
-            user.is_superuser = False
-            user.is_active = True
-            user.set_password(password)
-            user.save()
+            if user.is_staff or user.is_superuser:
+                raise CommandError(f"refusing to run: user {BENCH_USER!r} is privileged, not a bench account")
             rooms = []
             for n in range(1, ROOM_COUNT + 1):
                 room, _ = Room.objects.select_for_update().get_or_create(
                     name=f"{BENCH_PREFIX}{n:02d}", defaults={"capacity": BENCH_CAPACITY})
+                if room.capacity != BENCH_CAPACITY:
+                    # An existing BENCH-* room with another capacity (e.g. >100, the v2 approval
+                    # path) is not ours: inserting ACTIVE rows there would bypass PENDING.
+                    raise CommandError(f"refusing to run: room {room.name!r} has capacity {room.capacity}, "
+                                       f"expected {BENCH_CAPACITY}")
                 rooms.append(room)
+            # Disposable-database guard: a fresh stack (migrate + optional seed_demo) has no
+            # bookings except earlier bench runs. Any other booking means real/demo usage.
+            foreign = Booking.objects.exclude(owner=user, room__in=rooms).count()
+            if foreign:
+                raise CommandError(f"refusing to run: {foreign} non-bench booking(s) found; "
+                                   "bench_search runs only on a disposable database")
+            user.is_active = True
+            user.set_password(password)
+            user.save()
             existing = set(Booking.objects.filter(room__in=rooms, owner=user, status=Booking.Status.ACTIVE)
                            .values_list("room_id", "start"))
             missing = []
