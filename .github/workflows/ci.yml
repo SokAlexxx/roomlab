@@ -1,0 +1,30 @@
+name: RoomLab
+on:
+  pull_request:
+  push:
+    branches: [main, training/ci]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PG_PASS: ephemeral-test-pg
+      DEMO_PASS: ephemeral-test-user
+      DJANGO_SECRET_KEY: ephemeral-ci-local-only
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build web
+      - run: docker compose up -d --wait db
+      - run: docker compose run --rm web ruff check .
+      - run: docker compose run --rm web python manage.py makemigrations --check --dry-run
+      - run: docker compose run --rm web python manage.py migrate --noinput
+      - run: docker compose run --rm web python manage.py test
+      - run: git archive --format=zip --output=${{ runner.temp }}/roomlab-source.zip HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roomlab-source
+          path: ${{ runner.temp }}/roomlab-source.zip
+      - if: always()
+        run: docker compose down

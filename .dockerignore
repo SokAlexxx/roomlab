@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+*.dump
+.ruff_cache/
+.git
+.roomlab-check.py
